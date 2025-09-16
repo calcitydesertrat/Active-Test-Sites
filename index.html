@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <title>Test Sites Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -13,19 +12,14 @@
   />
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    /* Bold top-center note */
     .note {
       position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
+      top: 10px; left: 50%; transform: translateX(-50%);
       z-index: 1000;
       background: rgba(255,255,255,.9);
-      padding: 8px 14px;
-      border-radius: 6px;
+      padding: 8px 14px; border-radius: 6px;
       font: bold 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+      letter-spacing: 1px; text-transform: uppercase;
       box-shadow: 0 2px 8px rgba(0,0,0,.12);
     }
   </style>
@@ -39,95 +33,157 @@
     crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
-    // --- CONFIG ---
-    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // replace with your Google Sheets published CSV link
+    // ================= CONFIG =================
+    const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // .../pub?gid=0&single=true&output=csv
+    const REFRESH_MS   = 30000;                    // 30s
+    const DEBUG        = false;                    // set true to log decisions
 
-    // --- MAP ---
+    // ================= MAP ====================
     const map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
-
-    // Esri World Imagery basemap
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       { maxZoom: 19, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics" }
     ).addTo(map);
 
     const siteLayer = L.layerGroup().addTo(map);
-    let siteGraphics = [];
 
-    // Helpers
-    function fromCols(row, names) {
-      for (const n of names) if (row[n] !== undefined && row[n] !== "") return row[n];
+    // ================ HELPERS =================
+    // Normalize a row's headers: trim + lowercase keys
+    function normalizeRow(row) {
+      const out = {};
+      for (const key in row) {
+        if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+        const normKey = String(key).trim().toLowerCase();
+        out[normKey] = row[key];
+      }
+      return out;
+    }
+
+    function getVal(obj, keys) {
+      for (const k of keys) {
+        if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "") return obj[k];
+      }
       return undefined;
     }
+
     function toNumber(v) {
       if (v === undefined) return NaN;
       const s = String(v).trim().replace(/[°]/g, "");
-      return parseFloat(s);
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : NaN;
     }
+
     function metersFrom(row, base) {
-      const m  = toNumber(fromCols(row, [base+"_m", base+"_M", base+"_meters", base+"_Meters"]));
+      const m  = toNumber(getVal(row, [`${base}_m`, `${base}_meters`]));
       if (!Number.isNaN(m)) return m;
-      const ft = toNumber(fromCols(row, [base+"_ft", base+"_FT", base+"_feet", base+"_Feet"]));
+      const ft = toNumber(getVal(row, [`${base}_ft`, `${base}_feet`]));
       if (!Number.isNaN(ft)) return ft * 0.3048;
       return 0;
     }
 
-    function drawSite(row) {
-      let lat = toNumber(fromCols(row, ["lat","Lat","latitude","Latitude"]));
-      let lng = toNumber(fromCols(row, ["lng","Lng","lon","Lon","long","Long","longitude","Longitude"]));
-      if (Number.isNaN(lat) || Number.isNaN(lng)) return;
-      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+    function drawCirclesForRow(rowNorm) {
+      // Accept many lat/lon header variants
+      const lat = toNumber(getVal(rowNorm, ["lat", "latitude", "y"]));
+      const lng = toNumber(getVal(rowNorm, ["lng", "lon", "long", "longitude", "x"]));
 
-      const statusRaw = fromCols(row, ["status","Status","STATUS"]) || "";
-      const statusStr = String(statusRaw).trim();
-      const isActive = statusStr.toLowerCase() === "active";
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        if (DEBUG) console.log("Skip row (missing lat/lon):", rowNorm);
+        return null;
+      }
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        if (DEBUG) console.log("Skip row (lat/lon out of range):", lat, lng);
+        return null;
+      }
 
-      if (!isActive) return null; // skip inactive sites entirely
+      const statusRaw = getVal(rowNorm, ["status"]);
+      const statusStr = statusRaw ? String(statusRaw).trim() : "";
+      const isActive  = statusStr.toLowerCase() === "active";
 
-      const qd  = metersFrom(row, "QD");
-      const ptd = metersFrom(row, "PTD");
-      const ptr = metersFrom(row, "PTR");
+      if (!isActive) {
+        if (DEBUG) console.log("Skip row (not active):", statusStr);
+        return null; // show nothing for inactive
+      }
 
-      // Only circles for ACTIVE sites
-      const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.3,  weight:2 }) : null;
-      const ptdCircle = ptd ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 }) : null;
-      const ptrCircle = ptr ? L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.2,  weight:1 }) : null;
+      // Only circles for ACTIVE rows
+      const qd  = metersFrom(rowNorm, "qd");
+      const ptd = metersFrom(rowNorm, "ptd");
+      const ptr = metersFrom(rowNorm, "ptr");
 
-      return { qdCircle, ptdCircle, ptrCircle };
+      const g = {};
+      if (qd  > 0) g.qd  = L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.30, weight:2 });
+      if (ptd > 0) g.ptd = L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 });
+      if (ptr > 0) g.ptr = L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.20, weight:1 });
+      if (!g.qd && !g.ptd && !g.ptr) {
+        if (DEBUG) console.log("Active row but no radii > 0:", rowNorm);
+        return null;
+      }
+
+      // Keep a representative LatLng for fitBounds (prefer QD, then PTD, then PTR)
+      g._ll = (g.qd || g.ptd || g.ptr).getLatLng();
+      return g;
     }
 
-    function renderSites(graphics) {
+    function renderGraphics(graphics) {
       siteLayer.clearLayers();
-      graphics.forEach(g => [g.ptrCircle, g.ptdCircle, g.qdCircle].forEach(el => el && el.addTo(siteLayer)));
-      const pts = graphics
-        .map(g => g.qdCircle || g.ptdCircle || g.ptrCircle)
-        .filter(Boolean)
-        .map(c => c.getLatLng());
-      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [24,24] });
-    }
-
-    let lastCSVHash = "";
-    function loadCSVAndRender() {
-      Papa.parse(SHEET_CSV_URL, {
-        download: true,
-        header: true,
-        dynamicTyping: false,
-        complete: (res) => {
-          const rows = res.data.filter(r => r && (r.lat || r.latitude || r.Lat || r.Latitude));
-          const raw = rows.map(r => JSON.stringify(r)).join("|");
-          const hash = String(raw.length) + ":" + (raw.charCodeAt(0) || 0) + ":" + (raw.charCodeAt(raw.length-1) || 0);
-          if (hash === lastCSVHash && siteGraphics.length) return;
-          lastCSVHash = hash;
-
-          siteGraphics = rows.map(drawSite).filter(Boolean);
-          renderSites(siteGraphics);
-        },
-        error: (err) => console.error('Failed to load data:', err)
+      const ll = [];
+      graphics.forEach(g => {
+        if (g.qd)  g.qd.addTo(siteLayer);
+        if (g.ptd) g.ptd.addTo(siteLayer);
+        if (g.ptr) g.ptr.addTo(siteLayer);
+        if (g._ll) ll.push(g._ll);
       });
+      if (ll.length) map.fitBounds(L.latLngBounds(ll), { padding: [24,24] });
     }
 
-    loadCSVAndRender();
-    setInterval(loadCSVAndRender, 30000); // refresh every 30s
+    // ============ REFRESH LOOP (robust) ============
+    let lastCSVText = "";
+    let isLoading   = false;
+
+    function noCacheUrl() {
+      const sep = BASE_CSV_URL.includes("?") ? "&" : "?";
+      return `${BASE_CSV_URL}${sep}cb=${Date.now()}`;
+    }
+
+    async function refreshOnce() {
+      if (isLoading) return;
+      isLoading = true;
+      try {
+        const resp = await fetch(noCacheUrl(), { cache: "no-store" });
+        const csvText = await resp.text();
+
+        // If CSV text identical, skip re-render
+        if (csvText === lastCSVText) {
+          if (DEBUG) console.log("No change detected");
+          return;
+        }
+        lastCSVText = csvText;
+
+        // Parse with Papa; skip empty lines greedily
+        const parsed = Papa.parse(csvText, { header: true, dynamicTyping: false, skipEmptyLines: 'greedy' });
+
+        // Normalize and process every row
+        const graphics = [];
+        for (const row of parsed.data) {
+          // Ignore completely empty objects Papa can emit
+          if (!row || Object.keys(row).length === 0) continue;
+
+          const norm = normalizeRow(row);
+          const g = drawCirclesForRow(norm);
+          if (g) graphics.push(g);
+        }
+
+        renderGraphics(graphics);
+      } catch (e) {
+        console.error("Refresh error:", e);
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    (async function loop() {
+      await refreshOnce();
+      setTimeout(loop, REFRESH_MS);
+    })();
   </script>
 </body>
 </html>
