@@ -40,7 +40,7 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
     // --- CONFIG ---
-    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // .../pub?gid=0&single=true&output=csv
+    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // replace with your Google Sheets published CSV link
 
     // --- MAP ---
     const map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
@@ -54,6 +54,7 @@
     const siteLayer = L.layerGroup().addTo(map);
     let siteGraphics = [];
 
+    // Helpers
     function fromCols(row, names) {
       for (const n of names) if (row[n] !== undefined && row[n] !== "") return row[n];
       return undefined;
@@ -78,21 +79,27 @@
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
 
       const name   = fromCols(row, ["name","Name","site","Site","id","ID"]) || "Site";
+      const statusRaw = fromCols(row, ["status","Status","STATUS"]) || "";
+      const statusStr = String(statusRaw).trim();
+      const isActive = statusStr.toLowerCase() === "active";
+
       const qd  = metersFrom(row, "QD");
       const ptd = metersFrom(row, "PTD");
       const ptr = metersFrom(row, "PTR");
 
-      const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.3,  weight:2 }) : null;
-      const ptdCircle = ptd ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 }) : null;
-      const ptrCircle = ptr ? L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.2,  weight:1 }) : null;
+      // Circles only if site is ACTIVE
+      const qdCircle  = (isActive && qd)  ? L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.3,  weight:2 }) : null;
+      const ptdCircle = (isActive && ptd) ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 }) : null;
+      const ptrCircle = (isActive && ptr) ? L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.2,  weight:1 }) : null;
 
+      // Marker always shown
       const marker = L.circleMarker([lat, lng], {
         radius: 6,
-        color: '#00a884',
-        fillColor: '#00a884',
+        color: isActive ? '#00a884' : '#777',      // green if active, gray otherwise
+        fillColor: isActive ? '#00a884' : '#777',
         fillOpacity: 1,
         weight: 1.5
-      }).bindPopup(`<strong>${name}</strong>`);
+      }).bindPopup(`<strong>${name}</strong><br/>Status: ${statusStr || 'n/a'}`);
 
       return { marker, qdCircle, ptdCircle, ptrCircle };
     }
