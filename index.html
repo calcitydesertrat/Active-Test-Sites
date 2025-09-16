@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <title>Test Sites Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Force full page reload every 30 seconds -->
+  <meta http-equiv="refresh" content="30">
+
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -34,9 +38,8 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
     // ================= CONFIG =================
-    const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // .../pub?gid=0&single=true&output=csv
-    const REFRESH_MS   = 30000;                    // 30s
-    const DEBUG        = false;                    // set true to log decisions
+    const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // replace with your Google Sheets published CSV link
+    const REFRESH_MS   = 30000;
 
     // ================= MAP ====================
     const map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
@@ -48,7 +51,6 @@
     const siteLayer = L.layerGroup().addTo(map);
 
     // ================ HELPERS =================
-    // Normalize a row's headers: trim + lowercase keys
     function normalizeRow(row) {
       const out = {};
       for (const key in row) {
@@ -58,21 +60,18 @@
       }
       return out;
     }
-
     function getVal(obj, keys) {
       for (const k of keys) {
         if (obj[k] !== undefined && obj[k] !== null && String(obj[k]).trim() !== "") return obj[k];
       }
       return undefined;
     }
-
     function toNumber(v) {
       if (v === undefined) return NaN;
       const s = String(v).trim().replace(/[°]/g, "");
       const n = parseFloat(s);
       return Number.isFinite(n) ? n : NaN;
     }
-
     function metersFrom(row, base) {
       const m  = toNumber(getVal(row, [`${base}_m`, `${base}_meters`]));
       if (!Number.isNaN(m)) return m;
@@ -82,29 +81,14 @@
     }
 
     function drawCirclesForRow(rowNorm) {
-      // Accept many lat/lon header variants
       const lat = toNumber(getVal(rowNorm, ["lat", "latitude", "y"]));
       const lng = toNumber(getVal(rowNorm, ["lng", "lon", "long", "longitude", "x"]));
+      if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
 
-      if (Number.isNaN(lat) || Number.isNaN(lng)) {
-        if (DEBUG) console.log("Skip row (missing lat/lon):", rowNorm);
-        return null;
-      }
-      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        if (DEBUG) console.log("Skip row (lat/lon out of range):", lat, lng);
-        return null;
-      }
+      const statusStr = (getVal(rowNorm, ["status"]) || "").toString().trim().toLowerCase();
+      if (statusStr !== "active") return null;
 
-      const statusRaw = getVal(rowNorm, ["status"]);
-      const statusStr = statusRaw ? String(statusRaw).trim() : "";
-      const isActive  = statusStr.toLowerCase() === "active";
-
-      if (!isActive) {
-        if (DEBUG) console.log("Skip row (not active):", statusStr);
-        return null; // show nothing for inactive
-      }
-
-      // Only circles for ACTIVE rows
       const qd  = metersFrom(rowNorm, "qd");
       const ptd = metersFrom(rowNorm, "ptd");
       const ptr = metersFrom(rowNorm, "ptr");
@@ -113,13 +97,7 @@
       if (qd  > 0) g.qd  = L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.30, weight:2 });
       if (ptd > 0) g.ptd = L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 });
       if (ptr > 0) g.ptr = L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.20, weight:1 });
-      if (!g.qd && !g.ptd && !g.ptr) {
-        if (DEBUG) console.log("Active row but no radii > 0:", rowNorm);
-        return null;
-      }
-
-      // Keep a representative LatLng for fitBounds (prefer QD, then PTD, then PTR)
-      g._ll = (g.qd || g.ptd || g.ptr).getLatLng();
+      if (g.qd || g.ptd || g.ptr) g._ll = (g.qd || g.ptd || g.ptr).getLatLng();
       return g;
     }
 
@@ -135,48 +113,23 @@
       if (ll.length) map.fitBounds(L.latLngBounds(ll), { padding: [24,24] });
     }
 
-    // ============ REFRESH LOOP (robust) ============
-    let lastCSVText = "";
-    let isLoading   = false;
-
-    function noCacheUrl() {
-      const sep = BASE_CSV_URL.includes("?") ? "&" : "?";
-      return `${BASE_CSV_URL}${sep}cb=${Date.now()}`;
-    }
-
+    // ============ REFRESH LOOP (data layer) ============
     async function refreshOnce() {
-      if (isLoading) return;
-      isLoading = true;
       try {
-        const resp = await fetch(noCacheUrl(), { cache: "no-store" });
+        const resp = await fetch(BASE_CSV_URL + `?cb=${Date.now()}`, { cache: "no-store" });
         const csvText = await resp.text();
-
-        // If CSV text identical, skip re-render
-        if (csvText === lastCSVText) {
-          if (DEBUG) console.log("No change detected");
-          return;
-        }
-        lastCSVText = csvText;
-
-        // Parse with Papa; skip empty lines greedily
         const parsed = Papa.parse(csvText, { header: true, dynamicTyping: false, skipEmptyLines: 'greedy' });
 
-        // Normalize and process every row
         const graphics = [];
         for (const row of parsed.data) {
-          // Ignore completely empty objects Papa can emit
           if (!row || Object.keys(row).length === 0) continue;
-
           const norm = normalizeRow(row);
           const g = drawCirclesForRow(norm);
           if (g) graphics.push(g);
         }
-
         renderGraphics(graphics);
       } catch (e) {
         console.error("Refresh error:", e);
-      } finally {
-        isLoading = false;
       }
     }
 
