@@ -29,7 +29,8 @@
     <label><input type="checkbox" id="activeOnly" checked> Show Active Only</label>
     <div class="legend">
       <div><span class="swatch qd"></span> QD radius</div>
-     
+      <div><span class="swatch ptd"></span> PTD radius</div>
+      <div><span class="swatch ptr"></span> PTR radius</div>
     </div>
   </div>
   <div id="map"></div>
@@ -40,20 +41,16 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
     // --- CONFIG ---
-    // 1) For Google Sheets published CSV, paste the URL here:
-    //    Example: https://docs.google.com/spreadsheets/d/e/XXXX/pub?gid=0&single=true&output=csv
-    //    To keep private, point this to your own endpoint that returns CSV.
-    const SHEET_CSV_URL = "sites.csv"; // dev: local CSV (served via local web server). Replace with your sheet URL in production.
-    // 2) Mapbox token (create free account at mapbox.com and copy your token)
-    const MAPBOX_TOKEN  = "YOUR_MAPBOX_TOKEN";
+    // 1) Publish your Google Sheet to the web as CSV and paste the URL here:
+    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pubhtml"; // e.g. .../pub?gid=0&single=true&output=csv
 
     // --- MAP ---
     const map = L.map('map', { zoomControl: true }).setView([34.8, -106.8], 7);
 
-    // Satellite basemap (Mapbox Satellite)
+    // Satellite basemap (Esri World Imagery – no token required)
     L.tileLayer(
-      `https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=${https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pubhtml}`,
-      { tileSize: 512, zoomOffset: -1, maxZoom: 20, attribution: '© Mapbox © OpenStreetMap © Maxar' }
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community" }
     ).addTo(map);
 
     const siteLayer = L.layerGroup().addTo(map);
@@ -76,10 +73,13 @@
       const active = status === 'active';
 
       const qd  = metersFrom(row, "QD");
-      
+      const ptd = metersFrom(row, "PTD");
+      const ptr = metersFrom(row, "PTR");
 
       const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#4e79a7', fillColor:'#4e79a7', fillOpacity:0.12, weight:1 }) : null;
-      
+      const ptdCircle = ptd ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.10, weight:1 }) : null;
+      const ptrCircle = ptr ? L.circle([lat, lng], { radius: ptr, color:'#e15759', fillColor:'#e15759', fillOpacity:0.08, weight:1 }) : null;
+
       const marker = L.circleMarker([lat, lng], {
         radius: 6,
         color: active ? '#00a884' : '#666',
@@ -91,7 +91,9 @@
       const popupHtml = `
         <strong>${row.name || row.id || 'Site'}</strong><br/>
         Status: ${row.status || 'n/a'}<br/>
-        QD: ${qd ? qd.toFixed(0) : '—'} m &nbsp;|&nbsp; PTD: ${ptd ? ptd.toFixed(0) : '—'} m &nbsp;|&nbsp; PTR: ${ptr ? ptr.toFixed(0) : '—'} m<br/>
+        QD: ${qd ? qd.toFixed(0) : '—'} m &nbsp;|&nbsp;
+        PTD: ${ptd ? ptd.toFixed(0) : '—'} m &nbsp;|&nbsp;
+        PTR: ${ptr ? ptr.toFixed(0) : '—'} m<br/>
         Updated: ${row.last_updated || '—'}<br/>
         <em>${row.notes || ''}</em>
       `;
@@ -117,7 +119,7 @@
 
     function loadCSVAndRender() {
       siteGraphics.length = 0;
-      Papa.parse(https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pubhtml, {
+      Papa.parse(SHEET_CSV_URL, {
         download: true,
         header: true,
         dynamicTyping: false,
@@ -131,8 +133,8 @@
 
     loadCSVAndRender();
 
-    // Optional: auto-refresh every 60 seconds. Uncomment to enable.
-    // 
+    // Optional: auto-refresh data every 60 seconds:
+    // setInterval(loadCSVAndRender, 60000);
   </script>
 </body>
 </html>
