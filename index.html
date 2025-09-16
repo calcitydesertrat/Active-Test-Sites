@@ -1,9 +1,11 @@
 <!doctype html>
 <html lang="en">
-<head<meta http-equiv="refresh" content="30">
+<head>
   <meta charset="utf-8" />
   <title>Rocket Test Sites – QD/PTD/PTR Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- NOTE: No meta refresh here (we refresh data via JS) -->
+
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -12,15 +14,26 @@
   />
   <style>
     html, body, #map { height: 100%; margin: 0; }
+
     .control {
-      position: absolute; z-index: 1000; top: 10px; left: 10px;
-      background: rgba(255,255,255,.95); padding: 10px 12px; border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,.15); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      position: absolute;
+      z-index: 1000;
+      top: 10px;
+      right: 10px;   /* top-right to avoid zoom buttons */
+      left: auto;
+      background: rgba(255,255,255,.95);
+      padding: 10px 12px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     }
+
     .legend { font-size: 12px; margin-top: 8px; }
     .legend div { display: flex; align-items: center; margin: 4px 0; gap: 6px; }
     .swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3333; }
-    .qd { background:#4e79a7; } .ptd { background:#f28e2b; } .ptr { background:#e15759; }
+    .qd  { background:#e60000; } /* QD = red */
+    .ptd { background:#f28e2b; } /* PTD = orange */
+    .ptr { background:#a60000; } /* PTR = darker red */
   </style>
 </head>
 <body>
@@ -41,23 +54,21 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
     // --- CONFIG ---
-    // Paste your Google Sheets "Publish to the web" CSV URL here:
     const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // .../pub?gid=0&single=true&output=csv
 
     // --- MAP ---
-    // Start neutral; we'll auto-fit once data loads.
     const map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
 
-    // Basemap (Esri World Imagery – no API token needed)
+    // Satellite basemap (Esri World Imagery)
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      { maxZoom: 19, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community" }
+      { maxZoom: 19, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics" }
     ).addTo(map);
 
     const siteLayer = L.layerGroup().addTo(map);
-    const siteGraphics = [];
+    let siteGraphics = []; // will replace on each refresh
 
-    // Helpers to read flexible column names (e.g., "lat", "latitude", "Lat")
+    // Helpers
     function fromCols(row, names) {
       for (const n of names) if (row[n] !== undefined && row[n] !== "") return row[n];
       return undefined;
@@ -65,14 +76,12 @@
 
     function toNumber(v) {
       if (v === undefined) return NaN;
-      // Clean spaces and degree symbols if any slipped in
       const s = String(v).trim().replace(/[°]/g, "");
-      // Support "34.1, -118.2" in a single field by taking first/second later
       return parseFloat(s);
     }
 
     function metersFrom(row, base) {
-      const m = toNumber(fromCols(row, [base+"_m", base+"_M", base+"_meters", base+"_Meters"]));
+      const m  = toNumber(fromCols(row, [base+"_m", base+"_M", base+"_meters", base+"_Meters"]));
       if (!Number.isNaN(m)) return m;
       const ft = toNumber(fromCols(row, [base+"_ft", base+"_FT", base+"_feet", base+"_Feet"]));
       if (!Number.isNaN(ft)) return ft * 0.3048;
@@ -80,23 +89,9 @@
     }
 
     function drawSite(row) {
-      // Accept either separate lat/lng columns or a combined "coords" like "34.0, -118.2"
       let lat = toNumber(fromCols(row, ["lat","Lat","latitude","Latitude"]));
       let lng = toNumber(fromCols(row, ["lng","Lng","lon","Lon","long","Long","longitude","Longitude"]));
-
-      if ((Number.isNaN(lat) || Number.isNaN(lng))) {
-        const coords = fromCols(row, ["coords","Coords","coordinate","Coordinate"]);
-        if (coords) {
-          const parts = String(coords).split(/[,\s]+/).filter(Boolean);
-          if (parts.length >= 2) {
-            lat = parseFloat(parts[0]);
-            lng = parseFloat(parts[1]);
-          }
-        }
-      }
-      if (Number.isNaN(lat) || Number.isNaN(lng)) return; // skip bad rows
-
-      // Validate ranges to avoid "way off" points
+      if (Number.isNaN(lat) || Number.isNaN(lng)) return;
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
 
       const name   = fromCols(row, ["name","Name","site","Site","id","ID"]) || "Site";
@@ -107,9 +102,9 @@
       const ptd = metersFrom(row, "PTD");
       const ptr = metersFrom(row, "PTR");
 
-      const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#e15759', fillColor:'#e15759', fillOpacity:0.38, weight:2 }) : null;
-      const ptdCircle = ptd ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.10, weight:1 }) : null;
-      const ptrCircle = ptr ? L.circle([lat, lng], { radius: ptr, color:'#e15759', fillColor:'#e15759', fillOpacity:0.08, weight:1 }) : null;
+      const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#e60000', fillColor:'#ff4d4d', fillOpacity:0.4,  weight:2 }) : null;
+      const ptdCircle = ptd ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 }) : null;
+      const ptrCircle = ptr ? L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.2,  weight:1 }) : null;
 
       const marker = L.circleMarker([lat, lng], {
         radius: 6,
@@ -130,9 +125,7 @@
       `;
       marker.bindPopup(popupHtml);
 
-      const graphics = { active, marker, qdCircle, ptdCircle, ptrCircle };
-      siteGraphics.push(graphics);
-      return graphics;
+      return { active, marker, qdCircle, ptdCircle, ptrCircle };
     }
 
     function updateVisibility() {
@@ -144,31 +137,44 @@
         [g.ptrCircle, g.ptdCircle, g.qdCircle, g.marker].forEach(el => el && el.addTo(siteLayer));
       });
 
-      // Auto-fit to currently visible sites
       const pts = toShow.map(g => g.marker.getLatLng());
       if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [24,24] });
     }
 
     document.getElementById('activeOnly').addEventListener('change', updateVisibility);
 
+    // Store last data signature to avoid heavy re-renders if nothing changed
+    let lastCSVHash = "";
+
     function loadCSVAndRender() {
-      siteGraphics.length = 0;
       Papa.parse(SHEET_CSV_URL, {
         download: true,
         header: true,
         dynamicTyping: false,
         complete: (res) => {
-          res.data.filter(r => r && (r.lat || r.latitude || r.Lat || r.Latitude || r.coords || r.Coords)).forEach(drawSite);
+          // Build a quick hash on the raw text to detect actual changes
+          const raw = res.data.map(r => JSON.stringify(r)).join("|");
+          const hash = String(raw.length) + ":" + (raw.charCodeAt(0) || 0) + ":" + (raw.charCodeAt(raw.length-1) || 0);
+          if (hash === lastCSVHash && siteGraphics.length) {
+            // No data change → just bail quietly
+            return;
+          }
+          lastCSVHash = hash;
+
+          siteGraphics = res.data
+            .filter(r => r && (r.lat || r.latitude || r.Lat || r.Latitude))
+            .map(drawSite)
+            .filter(Boolean);
+
           updateVisibility();
         },
-        error: (err) => alert('Failed to load data: ' + err)
+        error: (err) => console.error('Failed to load data:', err)
       });
     }
 
+    // Initial load + refresh every 30s
     loadCSVAndRender();
-
-    // Optional: auto-refresh data every 30 seconds (uncomment to enable)
-    // setInterval(loadCSVAndRender, 15000);
+    setInterval(loadCSVAndRender, 30000); // 30,000 ms = 30 seconds
   </script>
 </body>
 </html>
