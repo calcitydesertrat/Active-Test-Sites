@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <title>Test Sites Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -13,19 +12,14 @@
   />
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    /* Bold top-center note */
     .note {
       position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
+      top: 10px; left: 50%; transform: translateX(-50%);
       z-index: 1000;
       background: rgba(255,255,255,.9);
-      padding: 8px 14px;
-      border-radius: 6px;
+      padding: 8px 14px; border-radius: 6px;
       font: bold 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+      letter-spacing: 1px; text-transform: uppercase;
       box-shadow: 0 2px 8px rgba(0,0,0,.12);
     }
   </style>
@@ -39,13 +33,12 @@
     crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script>
-    // --- CONFIG ---
-    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // replace with your Google Sheets published CSV link
+    // === CONFIG ===
+    const BASE_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pub?output=csv"; // .../pub?gid=0&single=true&output=csv
+    const REFRESH_MS = 30000; // 30s
 
-    // --- MAP ---
+    // === MAP ===
     const map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
-
-    // Esri World Imagery basemap
     L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       { maxZoom: 19, attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics" }
@@ -54,7 +47,7 @@
     const siteLayer = L.layerGroup().addTo(map);
     let siteGraphics = [];
 
-    // Helpers
+    // === HELPERS ===
     function fromCols(row, names) {
       for (const n of names) if (row[n] !== undefined && row[n] !== "") return row[n];
       return undefined;
@@ -78,10 +71,10 @@
       if (Number.isNaN(lat) || Number.isNaN(lng)) return;
       if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
 
-      const name   = fromCols(row, ["name","Name","site","Site","id","ID"]) || "Site";
+      const name      = fromCols(row, ["name","Name","site","Site","id","ID"]) || "Site";
       const statusRaw = fromCols(row, ["status","Status","STATUS"]) || "";
       const statusStr = String(statusRaw).trim();
-      const isActive = statusStr.toLowerCase() === "active";
+      const isActive  = statusStr.toLowerCase() === "active";
 
       const qd  = metersFrom(row, "QD");
       const ptd = metersFrom(row, "PTD");
@@ -92,10 +85,10 @@
       const ptdCircle = (isActive && ptd) ? L.circle([lat, lng], { radius: ptd, color:'#f28e2b', fillColor:'#f28e2b', fillOpacity:0.25, weight:1 }) : null;
       const ptrCircle = (isActive && ptr) ? L.circle([lat, lng], { radius: ptr, color:'#a60000', fillColor:'#a60000', fillOpacity:0.2,  weight:1 }) : null;
 
-      // Marker always shown
+      // Marker always shown — green if active, gray otherwise
       const marker = L.circleMarker([lat, lng], {
         radius: 6,
-        color: isActive ? '#00a884' : '#777',      // green if active, gray otherwise
+        color: isActive ? '#00a884' : '#777',
         fillColor: isActive ? '#00a884' : '#777',
         fillOpacity: 1,
         weight: 1.5
@@ -111,28 +104,49 @@
       if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [24,24] });
     }
 
-    let lastCSVHash = "";
-    function loadCSVAndRender() {
-      Papa.parse(SHEET_CSV_URL, {
-        download: true,
-        header: true,
-        dynamicTyping: false,
-        complete: (res) => {
-          const rows = res.data.filter(r => r && (r.lat || r.latitude || r.Lat || r.Latitude));
-          const raw = rows.map(r => JSON.stringify(r)).join("|");
-          const hash = String(raw.length) + ":" + (raw.charCodeAt(0) || 0) + ":" + (raw.charCodeAt(raw.length-1) || 0);
-          if (hash === lastCSVHash && siteGraphics.length) return;
-          lastCSVHash = hash;
+    // === REFRESH LOOP (cache-busting + no overlap + solid change detection) ===
+    let lastRawCSV = "";     // compare full text to detect any change
+    let isLoading = false;   // avoid overlapping pulls
 
-          siteGraphics = rows.map(drawSite).filter(Boolean);
-          renderSites(siteGraphics);
-        },
-        error: (err) => console.error('Failed to load data:', err)
-      });
+    function buildNoCacheUrl() {
+      const sep = BASE_CSV_URL.includes("?") ? "&" : "?";
+      // Add a moving 30s bucket to reduce re-downloads within the same half-minute if you prefer:
+      // const bucket = Math.floor(Date.now() / 30000);
+      // return `${BASE_CSV_URL}${sep}cb=${bucket}`;
+      return `${BASE_CSV_URL}${sep}cb=${Date.now()}`; // strict no-cache each time
     }
 
-    loadCSVAndRender();
-    setInterval(loadCSVAndRender, 30000); // refresh every 30s
+    async function refreshOnce() {
+      if (isLoading) return;
+      isLoading = true;
+      try {
+        // Fetch raw CSV text with no-store to defeat intermediate caches
+        const resp = await fetch(buildNoCacheUrl(), { cache: "no-store" });
+        const csvText = await resp.text();
+
+        // If identical to last pull, do nothing
+        if (csvText === lastRawCSV && siteGraphics.length) return;
+
+        lastRawCSV = csvText;
+
+        // Parse CSV text via Papa (client-side)
+        const parsed = Papa.parse(csvText, { header: true, dynamicTyping: false });
+        const rows = parsed.data.filter(r => r && (r.lat || r.latitude || r.Lat || r.Latitude));
+
+        siteGraphics = rows.map(drawSite).filter(Boolean);
+        renderSites(siteGraphics);
+      } catch (e) {
+        console.error("Data refresh failed:", e);
+      } finally {
+        isLoading = false;
+      }
+    }
+
+    // Kick off and self-schedule to avoid overlap
+    (async function loop() {
+      await refreshOnce();
+      setTimeout(loop, REFRESH_MS);
+    })();
   </script>
 </body>
 </html>
