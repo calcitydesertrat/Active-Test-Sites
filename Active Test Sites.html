@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rocket Test Sites – QD/PTD/PTR Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .control {
+      position: absolute; z-index: 1000; top: 10px; left: 10px;
+      background: rgba(255,255,255,.95); padding: 10px 12px; border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    .legend { font-size: 12px; margin-top: 8px; }
+    .legend div { display: flex; align-items: center; margin: 4px 0; gap: 6px; }
+    .swatch { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3333; }
+    .qd { background:#4e79a7; } .ptd { background:#f28e2b; } .ptr { background:#e15759; }
+  </style>
+</head>
+<body>
+  <div class="control">
+    <div style="font-weight:600;margin-bottom:6px;">Filters</div>
+    <label><input type="checkbox" id="activeOnly" checked> Show Active Only</label>
+    <div class="legend">
+      <div><span class="swatch qd"></span> QD radius</div>
+     
+    </div>
+  </div>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script>
+    // --- CONFIG ---
+    // 1) For Google Sheets published CSV, paste the URL here:
+    //    Example: https://docs.google.com/spreadsheets/d/e/XXXX/pub?gid=0&single=true&output=csv
+    //    To keep private, point this to your own endpoint that returns CSV.
+    const SHEET_CSV_URL = "sites.csv"; // dev: local CSV (served via local web server). Replace with your sheet URL in production.
+    // 2) Mapbox token (create free account at mapbox.com and copy your token)
+    const MAPBOX_TOKEN  = "YOUR_MAPBOX_TOKEN";
+
+    // --- MAP ---
+    const map = L.map('map', { zoomControl: true }).setView([34.8, -106.8], 7);
+
+    // Satellite basemap (Mapbox Satellite)
+    L.tileLayer(
+      `https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=${https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pubhtml}`,
+      { tileSize: 512, zoomOffset: -1, maxZoom: 20, attribution: '© Mapbox © OpenStreetMap © Maxar' }
+    ).addTo(map);
+
+    const siteLayer = L.layerGroup().addTo(map);
+    const siteGraphics = [];
+
+    function metersFrom(row, key) {
+      // Supports QD_m or QD_ft; same for PTD / PTR.
+      const m = parseFloat(row[key + "_m"]);
+      if (!Number.isNaN(m)) return m;
+      const ft = parseFloat(row[key + "_ft"]);
+      if (!Number.isNaN(ft)) return ft * 0.3048;
+      return 0;
+    }
+
+    function drawSite(row) {
+      const lat = parseFloat(row.lat), lng = parseFloat(row.lng);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) return;
+
+      const status = (row.status || '').toLowerCase();
+      const active = status === 'active';
+
+      const qd  = metersFrom(row, "QD");
+      
+
+      const qdCircle  = qd  ? L.circle([lat, lng], { radius: qd,  color:'#4e79a7', fillColor:'#4e79a7', fillOpacity:0.12, weight:1 }) : null;
+      
+      const marker = L.circleMarker([lat, lng], {
+        radius: 6,
+        color: active ? '#00a884' : '#666',
+        fillColor: active ? '#00a884' : '#666',
+        fillOpacity: 1,
+        weight: 1.5
+      });
+
+      const popupHtml = `
+        <strong>${row.name || row.id || 'Site'}</strong><br/>
+        Status: ${row.status || 'n/a'}<br/>
+        QD: ${qd ? qd.toFixed(0) : '—'} m &nbsp;|&nbsp; PTD: ${ptd ? ptd.toFixed(0) : '—'} m &nbsp;|&nbsp; PTR: ${ptr ? ptr.toFixed(0) : '—'} m<br/>
+        Updated: ${row.last_updated || '—'}<br/>
+        <em>${row.notes || ''}</em>
+      `;
+      marker.bindPopup(popupHtml);
+
+      const graphics = { id: row.id || Math.random().toString(36).slice(2), active, marker, qdCircle, ptdCircle, ptrCircle };
+      siteGraphics.push(graphics);
+      return graphics;
+    }
+
+    function updateVisibility() {
+      siteLayer.clearLayers();
+      const activeOnly = document.getElementById('activeOnly').checked;
+      const toShow = siteGraphics.filter(g => !activeOnly || g.active);
+      toShow.forEach(g => {
+        [g.ptrCircle, g.ptdCircle, g.qdCircle, g.marker].forEach(el => el && el.addTo(siteLayer));
+      });
+      const pts = toShow.map(g => g.marker.getLatLng());
+      if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [24,24] });
+    }
+
+    document.getElementById('activeOnly').addEventListener('change', updateVisibility);
+
+    function loadCSVAndRender() {
+      siteGraphics.length = 0;
+      Papa.parse(https://docs.google.com/spreadsheets/d/e/2PACX-1vSoErkMXLEG7xynznn0_opFq-rS8z9eQizEDL8e45E98AH9vHf7SwiwkvWoxFT_zeweec3iwIYNzbP1/pubhtml, {
+        download: true,
+        header: true,
+        dynamicTyping: false,
+        complete: (res) => {
+          res.data.filter(r => r && (r.lat || r.lng)).forEach(drawSite);
+          updateVisibility();
+        },
+        error: (err) => alert('Failed to load data: ' + err)
+      });
+    }
+
+    loadCSVAndRender();
+
+    // Optional: auto-refresh every 60 seconds. Uncomment to enable.
+    // 
+  </script>
+</body>
+</html>
